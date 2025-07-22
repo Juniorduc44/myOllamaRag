@@ -3,3 +3,5 @@ venv
 .env
 .praison
 __pycache__/
+RELEASE*
+documents/*
