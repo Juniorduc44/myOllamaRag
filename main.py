@@ -22,13 +22,33 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Get configuration from environment
-Model = os.getenv("MODEL", "deepseek-r1:8b")
+PROVIDER = os.getenv("PROVIDER", "ollama").lower()
+MODEL = os.getenv("MODEL", "deepseek-r1:8b")
 ollama_port = int(os.getenv("OLLAMA_PORT", "11434"))
-ollama_url = f"http://localhost:{ollama_port}"
+ollama_url = os.getenv("OLLAMA_BASE_URL", f"http://localhost:{ollama_port}")
 
-# Set dummy OpenAI key to prevent initialization errors
-if not os.getenv("OPENAI_API_KEY"):
-    os.environ["OPENAI_API_KEY"] = "dummy_key_not_used_for_ollama"
+def validate_configuration():
+    """Validate the configuration based on the selected provider"""
+    if PROVIDER == "ollama":
+        logger.info(f"✅ Using OLLAMA provider with model: {MODEL}")
+        logger.info(f"✅ Ollama URL: {ollama_url}")
+        # Don't set OpenAI key for Ollama
+        if "OPENAI_API_KEY" in os.environ:
+            del os.environ["OPENAI_API_KEY"]
+        return True
+        
+    elif PROVIDER == "openai":
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if not openai_key or openai_key == "your_actual_openai_api_key_here":
+            logger.error("❌ OpenAI provider selected but no valid API key found!")
+            logger.error("❌ Please set your actual OpenAI API key in the .env file")
+            return False
+        logger.info(f"✅ Using OPENAI provider with model: {MODEL}")
+        logger.info(f"✅ API Key: {openai_key[:8]}...")
+        return True
+    else:
+        logger.error(f"❌ Invalid provider: {PROVIDER}. Must be 'ollama' or 'openai'")
+        return False
 
 def safe_close_sockets():
     """Safely close any open sockets without triggering proxy object initialization"""
@@ -52,33 +72,60 @@ def safe_close_sockets():
         logger.warning(f"Error during socket cleanup: {e}")
 
 def setup_agent_config():
-    """Setup the agent configuration for Ollama"""
-    config = {
-        "vector_store": {
-            "provider": "chroma",
-            "config": {
-                "collection_name": "praison",
-                "path": ".praison"
-            }
-        },
-        "llm": {
-            "provider": "ollama",
-            "config": {
-                "model": Model,
-                "temperature": 0,
-                "max_tokens": 8000,
-                "ollama_base_url": ollama_url,
+    """Setup the agent configuration based on the selected provider"""
+    if PROVIDER == "ollama":
+        config = {
+            "vector_store": {
+                "provider": "chroma",
+                "config": {
+                    "collection_name": "praison",
+                    "path": ".praison"
+                }
             },
-        },
-        "embedder": {
-            "provider": "ollama",
-            "config": {
-                "model": "nomic-embed-text:latest",
-                "ollama_base_url": ollama_url,
-                "embedding_dims": 1536
+            "llm": {
+                "provider": "ollama",
+                "config": {
+                    "model": MODEL,
+                    "temperature": 0,
+                    "max_tokens": 8000,
+                    "ollama_base_url": ollama_url,
+                },
+            },
+            "embedder": {
+                "provider": "ollama",
+                "config": {
+                    "model": "nomic-embed-text:latest",
+                    "ollama_base_url": ollama_url,
+                    "embedding_dims": 1536
+                }
             }
         }
-    }
+    else:  # openai
+        config = {
+            "vector_store": {
+                "provider": "chroma",
+                "config": {
+                    "collection_name": "praison",
+                    "path": ".praison"
+                }
+            },
+            "llm": {
+                "provider": "openai",
+                "config": {
+                    "model": MODEL,
+                    "temperature": 0,
+                    "max_tokens": 8000,
+                },
+            },
+            "embedder": {
+                "provider": "openai",
+                "config": {
+                    "model": "text-embedding-3-small",
+                    "embedding_dims": 1536
+                }
+            }
+        }
+    
     return config
 
 def find_knowledge_files():
@@ -215,6 +262,11 @@ def main():
     try:
         logger.info("Starting Ollama RAG Tool...")
         
+        # Validate configuration first
+        if not validate_configuration():
+            logger.error("❌ Configuration validation failed!")
+            return
+        
         # Find and verify knowledge sources
         knowledge_files = verify_knowledge_sources()
         if not knowledge_files:
@@ -226,13 +278,14 @@ def main():
             logger.error("No usable knowledge files after processing")
             return
         
-        # Ensure Ollama server is running
-        logger.info(f"Ensuring Ollama server is running on {ollama_url}")
-        server_process = ensure_ollama_server_running(ollama_url, ollama_port)
+        # Only ensure Ollama server is running if using Ollama
+        if PROVIDER == "ollama":
+            logger.info(f"Ensuring Ollama server is running on {ollama_url}")
+            server_process = ensure_ollama_server_running(ollama_url, ollama_port)
         
         # Setup configuration
         config = setup_agent_config()
-        logger.info(f"Using model: {Model}")
+        logger.info(f"Using {PROVIDER.upper()} with model: {MODEL}")
         
         # Use the directory containing our processed files
         knowledge_source = temp_dir if temp_dir else "."
@@ -252,11 +305,12 @@ def main():
         logger.info("RAG Agent is ready! Type 'quit', 'exit', or 'q' to stop.")
         print("\n" + "="*60)
         print("🤖 Ollama RAG Tool Ready!")
-        print("📚 Knowledge Sources from documents folder: {len(knowledge_files)} file(s)")
+        print(f"🔗 Provider: {PROVIDER.upper()}")
+        print(f"📚 Knowledge Sources: {len(knowledge_files)} file(s)")
         for f in knowledge_files:
             relative_path = os.path.relpath(f, "./documents")
             print(f"   📄 {relative_path}")
-        print(f"🧠 Model: {Model}")
+        print(f"🧠 Model: {MODEL}")
         print("="*60)
         
         while True:
@@ -311,8 +365,8 @@ def main():
         # Clean up sockets
         safe_close_sockets()
         
-        # Terminate server process if we started it
-        if server_process:
+        # Terminate server process if we started it (only for Ollama)
+        if server_process and PROVIDER == "ollama":
             try:
                 server_process.terminate()
                 logger.info("Ollama server process terminated")
