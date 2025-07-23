@@ -1,2 +1,7 @@
 venv
 *.pdf
+.env
+.praison
+__pycache__/
+RELEASE*
+documents/*
